@@ -1,6 +1,26 @@
 # TurboMesh
 
-这是一个通过 WebRTC 和 go 语言作为本地客户端同时也是 DNS 解析服务器程序，让本地 HTTP 服务可以通过 WebRTC 打洞穿透 NAT 在远程浏览器上访问
+TurboMesh exposes a local HTTP service through WebRTC. The public Go server is
+authoritative DNS for `web.oboard.fun`, serves the homepage, and relays WebRTC
+signaling only. Application HTTP and WebSocket traffic travels peer-to-peer over
+WebRTC DataChannels between the browser and the local client.
 
-前端有 HomePage 也就是 web.oboard.fun
-可以通过*.web.oboard.fun访问启动了本地客户端服务的人
+TurboMesh 通过 WebRTC 暴露本地 HTTP 服务。公网 Go 服务同时作为
+`web.oboard.fun` 的权威 DNS、首页服务和 WebRTC 信令中转服务；业务 HTTP
+与 WebSocket 数据不经过公网服务转发，而是通过浏览器和本地客户端之间的
+WebRTC DataChannel 点对点传输。
+
+## Documentation
+
+- Quick start: [English](docs/quickstart.en.md) / [中文](docs/quickstart.zh-CN.md)
+- Deployment guide: [English](docs/deployment.en.md) / [中文](docs/deployment.zh-CN.md)
+- System implementation: [English](docs/architecture.en.md) /
+  [中文](docs/architecture.zh-CN.md)
+
+## Validation
+
+```sh
+go test ./...
+vp check
+vp test
+```

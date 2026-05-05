@@ -18,6 +18,7 @@
     "typescript": "~6.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@latest",
     "vite-plus": "latest",
+    "vitest": "^0.1.20",
     "vue-tsc": "^3.2.7"
   },
   "overrides": {
