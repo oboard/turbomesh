@@ -158,7 +158,8 @@ func runClient(ctx context.Context, port int, args []string) error {
 	if after, ok := strings.CutPrefix(domain, "api."); ok {
 		domain = after
 	}
-	log.Printf("session url: https://%s.%s", *slug, domain)
+	log.Printf("session url (http):  http://%s.%s", *slug, domain)
+	log.Printf("session url (https): https://%s.%s", *slug, domain)
 
 	client := NewLocalClient(u.String(), port, strings.Split(*stun, ","))
 	return client.Run(ctx)

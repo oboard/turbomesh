@@ -53,3 +53,25 @@ func TestHomepageServesFallbackWhenStaticMissing(t *testing.T) {
 		t.Fatal("expected fallback homepage content")
 	}
 }
+
+func TestTLSAskAllowsBaseAndValidSlugOnly(t *testing.T) {
+	handler := NewHTTPHandler("web.oboard.fun.", "missing-dist", NewSignalHub(), false)
+
+	for _, domain := range []string{"web.oboard.fun", "abc12345.web.oboard.fun"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/tls-ask?domain="+domain, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("%s should be allowed, got %d", domain, rec.Code)
+		}
+	}
+
+	for _, domain := range []string{"evil.example.com", "bad.slug.web.oboard.fun", "-abc12345.web.oboard.fun"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/tls-ask?domain="+domain, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s should be forbidden, got %d", domain, rec.Code)
+		}
+	}
+}

@@ -11,16 +11,16 @@ type SignalMessage = {
 
 type TunnelFrame = {
   type:
-  | "http-request"
-  | "http-response"
-  | "http-error"
-  | "ws-open"
-  | "ws-opened"
-  | "ws-send"
-  | "ws-message"
-  | "ws-close"
-  | "ws-error"
-  | "error";
+    | "http-request"
+    | "http-response"
+    | "http-error"
+    | "ws-open"
+    | "ws-opened"
+    | "ws-send"
+    | "ws-message"
+    | "ws-close"
+    | "ws-error"
+    | "error";
   id: string;
   method?: string;
   url?: string;
@@ -396,7 +396,12 @@ function injectRuntime(html: string) {
         <code>*.web.oboard.fun</code> service without routing app data through the server.
       </p>
       <form class="slug-form" @submit.prevent="openSlug">
-        <input v-model="slugInput" autocomplete="off" spellcheck="false" placeholder="session slug" />
+        <input
+          v-model="slugInput"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="session slug"
+        />
         <button type="submit">Open</button>
       </form>
       <p class="status">{{ status }}</p>
@@ -412,8 +417,11 @@ function injectRuntime(html: string) {
       <span :class="['dot', { connected }]" />
     </header>
     <section v-if="iframeHTML" class="viewport">
-      <iframe title="TurboMesh proxied service" sandbox="allow-forms allow-modals allow-scripts allow-same-origin"
-        :srcdoc="iframeHTML" />
+      <iframe
+        title="TurboMesh proxied service"
+        sandbox="allow-forms allow-modals allow-scripts allow-same-origin"
+        :srcdoc="iframeHTML"
+      />
     </section>
     <section v-else class="connect-state">
       <h1>{{ status }}</h1>

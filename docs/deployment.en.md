@@ -87,20 +87,49 @@ Homepage HTTP may be upgraded to HTTPS because Go returns a redirect when
 Wildcard hosts must not be force-upgraded. User services may intentionally need
 plain HTTP or `ws://`.
 
+Because `web.oboard.fun` is delegated to the Go DNS server, wildcard DNS-01
+certificate issuance is not available through the parent DNS provider. For Caddy,
+use On-Demand TLS for individual session hostnames and the TurboMesh ask endpoint
+at `/api/tls-ask`.
+
 ## Example Caddy Shape
 
 This is a shape, not a complete certificate or firewall policy:
 
 ```caddyfile
-web.oboard.fun, *.web.oboard.fun {
+{
+  auto_https disable_redirects
+  on_demand_tls {
+    ask http://127.0.0.1:8080/api/tls-ask
+  }
+}
+
+(turbomesh_proxy) {
   reverse_proxy 127.0.0.1:8080 {
     header_up Host {host}
     header_up X-Forwarded-Proto {scheme}
   }
 }
+
+http://web.oboard.fun,
+https://web.oboard.fun,
+http://*.web.oboard.fun {
+  import turbomesh_proxy
+}
+
+https://*.web.oboard.fun {
+  tls {
+    on_demand
+  }
+  import turbomesh_proxy
+}
 ```
 
 If you use Nginx, make sure WebSocket upgrade headers are forwarded.
+
+Do not use a single `web.oboard.fun, *.web.oboard.fun` Caddy site without
+On-Demand TLS. That usually gives the base domain a certificate but makes random
+slug HTTPS fail during the TLS handshake.
 
 ## Client Usage
 

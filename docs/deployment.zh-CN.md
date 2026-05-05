@@ -85,20 +85,48 @@ web.oboard.fun.             SOA  ns1.web.oboard.fun.
 
 通配符用户域名不能强制升级。用户服务可能明确需要 plain HTTP 或 `ws://`。
 
+因为 `web.oboard.fun` 已经委派给 Go DNS server，父域 DNS 服务商无法再直接
+完成 wildcard DNS-01 证书签发。使用 Caddy 时，推荐对每个实际 session
+子域名使用 On-Demand TLS，并通过 TurboMesh 的 `/api/tls-ask` 端点做允许检查。
+
 ## Caddy 配置形态示例
 
 下面只是配置形态，不是完整的证书或防火墙策略：
 
 ```caddyfile
-web.oboard.fun, *.web.oboard.fun {
+{
+  auto_https disable_redirects
+  on_demand_tls {
+    ask http://127.0.0.1:8080/api/tls-ask
+  }
+}
+
+(turbomesh_proxy) {
   reverse_proxy 127.0.0.1:8080 {
     header_up Host {host}
     header_up X-Forwarded-Proto {scheme}
   }
 }
+
+http://web.oboard.fun,
+https://web.oboard.fun,
+http://*.web.oboard.fun {
+  import turbomesh_proxy
+}
+
+https://*.web.oboard.fun {
+  tls {
+    on_demand
+  }
+  import turbomesh_proxy
+}
 ```
 
 如果使用 Nginx，需要确保 WebSocket upgrade 头被正确转发。
+
+不要使用没有 On-Demand TLS 的单个 `web.oboard.fun, *.web.oboard.fun` Caddy
+站点块。那通常只会让 base domain 拿到证书，而随机 slug 的 HTTPS 会在 TLS
+握手阶段失败。
 
 ## 客户端使用
 

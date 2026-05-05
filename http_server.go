@@ -20,6 +20,7 @@ func NewHTTPHandler(domain, staticDir string, hub *SignalHub, forceHomepageHTTPS
 
 	mux.HandleFunc("/api/client", hub.ServeClient)
 	mux.HandleFunc("/api/browser", hub.ServeBrowser)
+	mux.HandleFunc("/api/tls-ask", serveTLSAsk(domain))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		host := strings.ToLower(hostWithoutPort(r.Host))
 		isHomepage := host == strings.TrimSuffix(domain, ".")
@@ -32,6 +33,30 @@ func NewHTTPHandler(domain, staticDir string, hub *SignalHub, forceHomepageHTTPS
 	})
 
 	return mux
+}
+
+func serveTLSAsk(domain string) http.HandlerFunc {
+	base := strings.TrimSuffix(strings.ToLower(domain), ".")
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimSuffix(strings.ToLower(r.URL.Query().Get("domain")), ".")
+		if name == base || isAllowedSessionHost(name, base) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "domain is not allowed for TurboMesh TLS", http.StatusForbidden)
+	}
+}
+
+func isAllowedSessionHost(name, base string) bool {
+	suffix := "." + base
+	if !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	label := strings.TrimSuffix(name, suffix)
+	if strings.Contains(label, ".") {
+		return false
+	}
+	return validateSlug(label) == nil
 }
 
 func shouldRedirectHomepageToHTTPS(r *http.Request) bool {
