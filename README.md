@@ -1,5 +1,6 @@
-# Vue 3 + TypeScript + Vite
+# TurboMesh
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+这是一个通过 WebRTC 和 go 语言作为本地客户端同时也是 DNS 解析服务器程序，让本地 HTTP 服务可以通过 WebRTC 打洞穿透 NAT 在远程浏览器上访问
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+前端有 HomePage 也就是 web.oboard.fun
+可以通过*.web.oboard.fun访问启动了本地客户端服务的人
