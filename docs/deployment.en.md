@@ -125,6 +125,16 @@ https://*.web.oboard.fun {
 }
 ```
 
+The global options block must be the first non-comment block in the Caddyfile.
+If the file already contains other sites such as `newapi.oboard.fun`, keep them
+below the global block.
+
+`auto_https disable_redirects` is global. It prevents Caddy from automatically
+redirecting HTTP to HTTPS for every site in the same Caddyfile. This is required
+for `http://*.web.oboard.fun`, but it also affects unrelated sites. If another
+site still needs HTTP-to-HTTPS redirects, add an explicit HTTP redirect site for
+that hostname.
+
 If you use Nginx, make sure WebSocket upgrade headers are forwarded.
 
 Do not use a single `web.oboard.fun, *.web.oboard.fun` Caddy site without

@@ -122,6 +122,14 @@ https://*.web.oboard.fun {
 }
 ```
 
+全局配置块必须是 Caddyfile 里的第一个非注释配置块。如果文件里已经有
+`newapi.oboard.fun` 之类的其他站点，也要把它们放在全局块后面。
+
+`auto_https disable_redirects` 是全局设置。它会阻止同一个 Caddyfile 中所有
+站点的自动 HTTP 到 HTTPS 跳转。TurboMesh 需要这个设置来保留
+`http://*.web.oboard.fun`，但它也会影响其他无关站点。如果其他站点仍然需要
+HTTP 到 HTTPS 跳转，需要为那个 hostname 单独加显式 HTTP 跳转站点块。
+
 如果使用 Nginx，需要确保 WebSocket upgrade 头被正确转发。
 
 不要使用没有 On-Demand TLS 的单个 `web.oboard.fun, *.web.oboard.fun` Caddy
