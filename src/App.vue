@@ -74,6 +74,9 @@ let serviceWorkerBridge: MessagePort | undefined;
 let cleaningUp = false;
 let reloadingForServiceWorker = false;
 let tunnelOpenResolve: (() => void) | undefined;
+let activeSlug = "";
+let reconnectTimer: number | undefined;
+let reconnectDelay = 1_000;
 const pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 const pendingHTTP = new Map<string, PendingHTTP>();
 
@@ -98,6 +101,7 @@ function openSlug() {
 }
 
 async function startProxy(slug: string) {
+  activeSlug = slug;
   status.value = "Preparing browser tunnel";
   detail.value = `Connecting to ${slug}.${baseDomain}`;
   installRuntimeListeners();
@@ -108,6 +112,14 @@ async function startProxy(slug: string) {
     detail.value = error instanceof Error ? error.message : String(error);
     return;
   }
+
+  connectBrowserPeer(slug);
+}
+
+function connectBrowserPeer(slug: string) {
+  cleanupPeer();
+  status.value = "Negotiating WebRTC";
+  detail.value = `Connecting to ${slug}.${baseDomain}`;
 
   peer = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -151,6 +163,7 @@ async function startProxy(slug: string) {
     `${wsScheme}://${window.location.host}/api/browser?slug=${encodeURIComponent(slug)}`,
   );
   signalSocket.addEventListener("open", async () => {
+    reconnectDelay = 1_000;
     status.value = "Negotiating WebRTC";
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
@@ -181,10 +194,39 @@ async function startProxy(slug: string) {
     }
   });
   signalSocket.addEventListener("close", () => {
-    if (!connected.value) {
-      status.value = "Signaling disconnected";
-    }
+    connected.value = false;
+    status.value = "Signaling disconnected";
+    scheduleBrowserReconnect();
   });
+}
+
+function scheduleBrowserReconnect() {
+  if (cleaningUp || !activeSlug || reconnectTimer !== undefined) {
+    return;
+  }
+  const delay = reconnectDelay;
+  detail.value = `Reconnecting in ${Math.ceil(delay / 1000)}s`;
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = undefined;
+    reconnectDelay = Math.min(reconnectDelay * 2, 15_000);
+    connectBrowserPeer(activeSlug);
+  }, delay);
+}
+
+function cleanupPeer() {
+  tunnelOpenResolve = undefined;
+  pendingRemoteCandidates.splice(0);
+  for (const pending of pendingHTTP.values()) {
+    pending.reject(new Error("WebRTC tunnel reconnecting"));
+  }
+  pendingHTTP.clear();
+  signalSocket?.close();
+  channel?.close();
+  peer?.close();
+  signalSocket = undefined;
+  channel = undefined;
+  peer = undefined;
+  connected.value = false;
 }
 
 function sendSignal(message: SignalMessage) {
@@ -485,6 +527,9 @@ function cleanupSession() {
     return;
   }
   cleaningUp = true;
+  if (reconnectTimer !== undefined) {
+    window.clearTimeout(reconnectTimer);
+  }
   navigator.serviceWorker.controller?.postMessage({ type: "turbomesh-disconnect" });
   serviceWorkerBridge?.close();
   signalSocket?.close();

@@ -62,6 +62,9 @@ func (c *LocalClient) runOnce(ctx context.Context) error {
 	}
 	defer conn.Close()
 	c.conn = conn
+	c.mu.Lock()
+	c.peers = make(map[string]*webrtc.PeerConnection)
+	c.mu.Unlock()
 	log.Printf("signaling connected")
 
 	done := make(chan error, 1)
