@@ -36,10 +36,19 @@ type PendingHTTP = {
   reject: (error: Error) => void;
 };
 
+declare global {
+  interface Window {
+    __turbomesh?: {
+      openWS: (id: string, url: string) => void;
+      sendWS: (id: string, body: string, opcode: number) => void;
+      closeWS: (id: string) => void;
+    };
+  }
+}
+
 const slugInput = ref("");
 const status = ref("Ready");
 const detail = ref("");
-const iframeHTML = ref("");
 const connected = ref(false);
 const mode = computed(() => (currentSlug() ? "proxy" : "home"));
 
@@ -48,7 +57,6 @@ let peer: RTCPeerConnection | undefined;
 let channel: RTCDataChannel | undefined;
 let requestSeq = 0;
 const pendingHTTP = new Map<string, PendingHTTP>();
-const websocketWindows = new Map<string, Window>();
 
 onMounted(() => {
   const slug = currentSlug();
@@ -160,6 +168,18 @@ async function registerServiceWorker() {
 }
 
 function installRuntimeListeners() {
+  window.__turbomesh = {
+    openWS(id, url) {
+      sendTunnel({ type: "ws-open", id, url, headers: {} });
+    },
+    sendWS(id, body, opcode) {
+      sendTunnel({ type: "ws-send", id, body, opcode });
+    },
+    closeWS(id) {
+      sendTunnel({ type: "ws-close", id });
+    },
+  };
+
   navigator.serviceWorker?.addEventListener("message", (event) => {
     const port = event.ports[0];
     const data = event.data as {
@@ -179,30 +199,6 @@ function installRuntimeListeners() {
         port.postMessage({ status: 502, statusText: error.message, headers: {}, body: "" }),
       );
   });
-
-  window.addEventListener("message", (event) => {
-    const data = event.data as {
-      type?: string;
-      id?: string;
-      url?: string;
-      body?: string;
-      opcode?: number;
-    };
-    if (!data.id || !data.type) {
-      return;
-    }
-    if (data.type === "turbomesh-ws-open" && data.url) {
-      websocketWindows.set(data.id, event.source as Window);
-      sendTunnel({ type: "ws-open", id: data.id, url: data.url, headers: {} });
-    }
-    if (data.type === "turbomesh-ws-send") {
-      sendTunnel({ type: "ws-send", id: data.id, body: data.body ?? "", opcode: data.opcode ?? 1 });
-    }
-    if (data.type === "turbomesh-ws-close") {
-      sendTunnel({ type: "ws-close", id: data.id });
-      websocketWindows.delete(data.id);
-    }
-  });
 }
 
 async function loadInitialDocument() {
@@ -214,10 +210,10 @@ async function loadInitialDocument() {
   );
   const contentType = headerValue(response.headers, "content-type");
   if (!contentType.includes("text/html")) {
-    iframeHTML.value = `<pre>${escapeHTML(bytesToText(response.body ?? ""))}</pre>`;
+    replaceDocument(`<pre>${escapeHTML(bytesToText(response.body ?? ""))}</pre>`);
     return;
   }
-  iframeHTML.value = injectRuntime(bytesToText(response.body ?? ""));
+  replaceDocument(injectRuntime(bytesToText(response.body ?? "")));
 }
 
 function tunnelHTTP(method: string, url: string, headers: Record<string, string[]>, body: string) {
@@ -256,12 +252,14 @@ function handleTunnelFrame(frame: TunnelFrame) {
   }
 
   if (frame.type.startsWith("ws-")) {
-    const target = websocketWindows.get(frame.id);
-    target?.postMessage({ ...frame, type: `turbomesh-${frame.type}` }, "*");
-    if (frame.type === "ws-close" || frame.type === "ws-error") {
-      websocketWindows.delete(frame.id);
-    }
+    window.postMessage({ ...frame, type: `turbomesh-${frame.type}` }, "*");
   }
+}
+
+function replaceDocument(html: string) {
+  document.open();
+  document.write(html);
+  document.close();
 }
 
 function nextID() {
@@ -312,14 +310,14 @@ function injectRuntime(html: string) {
       this.url = String(url);
       this.readyState = 0;
       this.id = "ws-" + Date.now().toString(36) + "-" + (++wsSeq).toString(36);
-      parent.postMessage({ type: "turbomesh-ws-open", id: this.id, url: this.url }, "*");
+      window.__turbomesh.openWS(this.id, this.url);
     }
     send(data) {
       const binary = data instanceof ArrayBuffer;
-      parent.postMessage({ type: "turbomesh-ws-send", id: this.id, opcode: binary ? 2 : 1, body: encodePayload(data) }, "*");
+      window.__turbomesh.sendWS(this.id, encodePayload(data), binary ? 2 : 1);
     }
     close() {
-      parent.postMessage({ type: "turbomesh-ws-close", id: this.id }, "*");
+      window.__turbomesh.closeWS(this.id);
     }
   }
   TurboMeshWebSocket.CONNECTING = 0;
@@ -416,14 +414,7 @@ function injectRuntime(html: string) {
       </div>
       <span :class="['dot', { connected }]" />
     </header>
-    <section v-if="iframeHTML" class="viewport">
-      <iframe
-        title="TurboMesh proxied service"
-        sandbox="allow-forms allow-modals allow-scripts allow-same-origin"
-        :srcdoc="iframeHTML"
-      />
-    </section>
-    <section v-else class="connect-state">
+    <section class="connect-state">
       <h1>{{ status }}</h1>
       <p>{{ detail }}</p>
     </section>

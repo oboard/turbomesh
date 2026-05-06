@@ -115,7 +115,7 @@ Proxy mode:
 - opens the browser signaling WebSocket
 - creates a WebRTC peer connection
 - creates the `turbomesh` DataChannel
-- loads the proxied local document into an iframe
+- replaces the current document with the proxied local HTML document
 - injects a small runtime to shim browser `WebSocket`
 
 `public/turbomesh-sw.js` intercepts subresource HTTP fetches and sends them to

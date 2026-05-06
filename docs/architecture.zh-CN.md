@@ -113,7 +113,7 @@ HTTPS 首页打开 HTTPS 通配符 URL，HTTP 首页打开 HTTP 通配符 URL。
 - 打开浏览器信令 WebSocket
 - 创建 WebRTC peer connection
 - 创建 `turbomesh` DataChannel
-- 把代理后的本地文档加载进 iframe
+- 用代理后的本地 HTML 文档替换当前 document
 - 注入一个小 runtime 来 shim 浏览器 `WebSocket`
 
 `public/turbomesh-sw.js` 拦截子资源 HTTP fetch，把请求发给 Vue controller
