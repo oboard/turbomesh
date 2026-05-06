@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { baseDomain, buildSessionURL, getSessionSlug, isValidSlug } from "./domain";
+import turbomeshRuntime from "./turbomesh-runtime.js?raw";
 
 type SignalMessage = {
   type: "browser-ready" | "offer" | "answer" | "ice" | "error" | "session-expired";
@@ -56,6 +57,7 @@ let signalSocket: WebSocket | undefined;
 let peer: RTCPeerConnection | undefined;
 let channel: RTCDataChannel | undefined;
 let requestSeq = 0;
+const pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 const pendingHTTP = new Map<string, PendingHTTP>();
 
 onMounted(() => {
@@ -94,9 +96,14 @@ async function startProxy(slug: string) {
     detail.value = "HTTP and WebSocket traffic are using WebRTC DataChannels.";
     void loadInitialDocument();
   });
-  channel.addEventListener("message", (event) =>
-    handleTunnelFrame(JSON.parse(event.data as string) as TunnelFrame),
-  );
+  channel.addEventListener("message", (event) => {
+    void parseDataChannelJSON(event.data)
+      .then((frame) => handleTunnelFrame(frame as TunnelFrame))
+      .catch((error: Error) => {
+        status.value = "Tunnel error";
+        detail.value = error.message;
+      });
+  });
   channel.addEventListener("close", () => {
     connected.value = false;
     status.value = "Disconnected";
@@ -128,10 +135,15 @@ async function startProxy(slug: string) {
     const message = JSON.parse(event.data as string) as SignalMessage;
     if (message.type === "answer" && message.sdp) {
       await peer.setRemoteDescription({ type: "answer", sdp: message.sdp });
+      await flushRemoteCandidates();
       return;
     }
     if (message.type === "ice" && message.candidate) {
-      await peer.addIceCandidate(message.candidate);
+      if (peer.remoteDescription) {
+        await peer.addIceCandidate(message.candidate);
+      } else {
+        pendingRemoteCandidates.push(message.candidate);
+      }
       return;
     }
     if (message.type === "session-expired") {
@@ -162,9 +174,39 @@ async function registerServiceWorker() {
   }
   const registration = await navigator.serviceWorker.register("/turbomesh-sw.js", { scope: "/" });
   await navigator.serviceWorker.ready;
-  const worker = registration.active ?? registration.waiting ?? registration.installing;
+  if (!navigator.serviceWorker.controller) {
+    if (sessionStorage.getItem("turbomesh-sw-reloaded") !== "1") {
+      sessionStorage.setItem("turbomesh-sw-reloaded", "1");
+      window.location.reload();
+      await new Promise<never>(() => {});
+    }
+    await waitForServiceWorkerController();
+  }
+  sessionStorage.removeItem("turbomesh-sw-reloaded");
+  const worker =
+    navigator.serviceWorker.controller ??
+    registration.active ??
+    registration.waiting ??
+    registration.installing;
   worker?.postMessage({ type: "turbomesh-controller" });
-  navigator.serviceWorker.controller?.postMessage({ type: "turbomesh-controller" });
+}
+
+function waitForServiceWorkerController() {
+  if (navigator.serviceWorker.controller) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+      reject(new Error("service worker did not control the page"));
+    }, 5_000);
+    function onControllerChange() {
+      window.clearTimeout(timeout);
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+      resolve();
+    }
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+  });
 }
 
 function installRuntimeListeners() {
@@ -236,6 +278,28 @@ function sendTunnel(frame: TunnelFrame) {
   channel.send(JSON.stringify(frame));
 }
 
+async function flushRemoteCandidates() {
+  if (!peer?.remoteDescription) {
+    return;
+  }
+  while (pendingRemoteCandidates.length > 0) {
+    const candidate = pendingRemoteCandidates.shift();
+    if (candidate) {
+      await peer.addIceCandidate(candidate);
+    }
+  }
+}
+
+async function parseDataChannelJSON(data: string | Blob | ArrayBuffer) {
+  if (typeof data === "string") {
+    return JSON.parse(data) as unknown;
+  }
+  if (data instanceof Blob) {
+    return JSON.parse(await data.text()) as unknown;
+  }
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(data))) as unknown;
+}
+
 function handleTunnelFrame(frame: TunnelFrame) {
   if (frame.type === "http-response" || frame.type === "http-error") {
     const pending = pendingHTTP.get(frame.id);
@@ -300,83 +364,8 @@ function escapeHTML(value: string) {
 
 function injectRuntime(html: string) {
   const base = `<base href="/" />`;
-  const runtime = `<script>
-(() => {
-  const NativeEventTarget = EventTarget;
-  let wsSeq = 0;
-  class TurboMeshWebSocket extends NativeEventTarget {
-    constructor(url) {
-      super();
-      this.url = String(url);
-      this.readyState = 0;
-      this.id = "ws-" + Date.now().toString(36) + "-" + (++wsSeq).toString(36);
-      window.__turbomesh.openWS(this.id, this.url);
-    }
-    send(data) {
-      const binary = data instanceof ArrayBuffer;
-      window.__turbomesh.sendWS(this.id, encodePayload(data), binary ? 2 : 1);
-    }
-    close() {
-      window.__turbomesh.closeWS(this.id);
-    }
-  }
-  TurboMeshWebSocket.CONNECTING = 0;
-  TurboMeshWebSocket.OPEN = 1;
-  TurboMeshWebSocket.CLOSING = 2;
-  TurboMeshWebSocket.CLOSED = 3;
-  addEventListener("message", (event) => {
-    const data = event.data || {};
-    if (!data.id || !data.type) return;
-    const sockets = TurboMeshWebSocket._sockets || (TurboMeshWebSocket._sockets = new Map());
-    let socket = sockets.get(data.id);
-    if (!socket) return;
-    if (data.type === "turbomesh-ws-opened") {
-      socket.readyState = 1;
-      socket.dispatchEvent(new Event("open"));
-      socket.onopen && socket.onopen(new Event("open"));
-    }
-    if (data.type === "turbomesh-ws-message") {
-      const message = new MessageEvent("message", { data: data.opcode === 2 ? decodeBytes(data.body || "").buffer : decodeText(data.body || "") });
-      socket.dispatchEvent(message);
-      socket.onmessage && socket.onmessage(message);
-    }
-    if (data.type === "turbomesh-ws-close" || data.type === "turbomesh-ws-error") {
-      socket.readyState = 3;
-      const close = new CloseEvent("close");
-      socket.dispatchEvent(close);
-      socket.onclose && socket.onclose(close);
-      sockets.delete(data.id);
-    }
-  });
-  const Original = TurboMeshWebSocket;
-  window.WebSocket = function(url) {
-    const socket = new Original(url);
-    Original._sockets = Original._sockets || new Map();
-    Original._sockets.set(socket.id, socket);
-    return socket;
-  };
-  Object.assign(window.WebSocket, Original);
-  function encodePayload(data) {
-    if (data instanceof ArrayBuffer) return encodeBytes(new Uint8Array(data));
-    if (ArrayBuffer.isView(data)) return encodeBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-    return encodeBytes(new TextEncoder().encode(String(data)));
-  }
-  function decodeText(value) {
-    return new TextDecoder().decode(decodeBytes(value));
-  }
-  function decodeBytes(value) {
-    const binary = atob(value);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    return bytes;
-  }
-  function encodeBytes(bytes) {
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary);
-  }
-})();
-<\\/script>`;
+  const closeScript = "</scr" + "ipt>";
+  const runtime = `<script>${turbomeshRuntime}\n${closeScript}`;
   if (html.includes("<head")) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${base}${runtime}`);
   }
