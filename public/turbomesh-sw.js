@@ -22,6 +22,9 @@ self.addEventListener("message", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) {
+    return;
+  }
   if (url.pathname === "/turbomesh-sw.js" || url.pathname.startsWith("/api/")) {
     return;
   }

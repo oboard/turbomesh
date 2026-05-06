@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -31,6 +33,7 @@ type TunnelFrame struct {
 type TunnelProxy struct {
 	port   int
 	http   *http.Client
+	sendMu sync.Mutex
 	wsMu   sync.Mutex
 	wsConn map[string]*websocket.Conn
 }
@@ -95,15 +98,67 @@ func (p *TunnelProxy) handleHTTPRequest(dc *webrtc.DataChannel, frame TunnelFram
 		p.send(dc, TunnelFrame{Type: "http-error", ID: frame.ID, Status: http.StatusBadGateway, StatusText: err.Error()})
 		return
 	}
+	if isHTMLAssetFallback(frame.URL, resp.Header) {
+		p.send(dc, TunnelFrame{
+			Type:       "http-response",
+			ID:         frame.ID,
+			Status:     http.StatusNotFound,
+			StatusText: "404 Not Found",
+			Headers:    map[string][]string{"Content-Type": {"text/plain; charset=utf-8"}},
+			Body:       base64.StdEncoding.EncodeToString([]byte("404 page not found\n")),
+		})
+		return
+	}
 
-	p.send(dc, TunnelFrame{
+	p.sendHTTPResponse(dc, frame.ID, TunnelFrame{
 		Type:       "http-response",
 		ID:         frame.ID,
 		Status:     resp.StatusCode,
 		StatusText: resp.Status,
 		Headers:    filteredHeaders(resp.Header),
-		Body:       base64.StdEncoding.EncodeToString(respBody),
-	})
+	}, respBody)
+}
+
+func (p *TunnelProxy) sendHTTPResponse(dc *webrtc.DataChannel, id string, meta TunnelFrame, body []byte) {
+	const chunkSize = 12 * 1024
+	if len(body) <= chunkSize {
+		meta.Body = base64.StdEncoding.EncodeToString(body)
+		p.send(dc, meta)
+		return
+	}
+
+	meta.Type = "http-response-start"
+	meta.Body = ""
+	p.send(dc, meta)
+	for offset := 0; offset < len(body); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(body) {
+			end = len(body)
+		}
+		p.send(dc, TunnelFrame{
+			Type: "http-response-chunk",
+			ID:   id,
+			Body: base64.StdEncoding.EncodeToString(body[offset:end]),
+		})
+	}
+	p.send(dc, TunnelFrame{Type: "http-response-end", ID: id})
+}
+
+func isHTMLAssetFallback(rawURL string, headers http.Header) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(u.Path))
+	if ext == "" {
+		return false
+	}
+	expected := mime.TypeByExtension(ext)
+	if expected == "" {
+		return false
+	}
+	contentType := strings.ToLower(headers.Get("Content-Type"))
+	return strings.Contains(contentType, "text/html") && !strings.Contains(expected, "text/html")
 }
 
 func (p *TunnelProxy) handleWSOpen(dc *webrtc.DataChannel, frame TunnelFrame) {
@@ -189,6 +244,8 @@ func (p *TunnelProxy) localURL(scheme, raw string) (string, error) {
 func (p *TunnelProxy) send(dc *webrtc.DataChannel, frame TunnelFrame) {
 	payload, err := json.Marshal(frame)
 	if err == nil {
+		p.sendMu.Lock()
+		defer p.sendMu.Unlock()
 		_ = dc.Send(payload)
 	}
 }

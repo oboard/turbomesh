@@ -14,6 +14,9 @@ type TunnelFrame = {
   type:
     | "http-request"
     | "http-response"
+    | "http-response-start"
+    | "http-response-chunk"
+    | "http-response-end"
     | "http-error"
     | "ws-open"
     | "ws-opened"
@@ -37,6 +40,8 @@ type TunnelFrame = {
 type PendingHTTP = {
   resolve: (frame: TunnelFrame) => void;
   reject: (error: Error) => void;
+  chunks: string[];
+  response?: TunnelFrame;
 };
 
 declare global {
@@ -315,7 +320,7 @@ function tunnelHTTP(method: string, url: string, headers: Record<string, string[
   const id = nextID();
   sendTunnel({ type: "http-request", id, method, url, headers, body });
   return new Promise<TunnelFrame>((resolve, reject) => {
-    pendingHTTP.set(id, { resolve, reject });
+    pendingHTTP.set(id, { resolve, reject, chunks: [] });
     window.setTimeout(() => {
       if (pendingHTTP.delete(id)) {
         reject(new Error("request timed out"));
@@ -354,6 +359,37 @@ async function parseDataChannelJSON(data: string | Blob | ArrayBuffer) {
 }
 
 function handleTunnelFrame(frame: TunnelFrame) {
+  if (frame.type === "http-response-start") {
+    const pending = pendingHTTP.get(frame.id);
+    if (pending) {
+      pending.response = frame;
+      pending.chunks = [];
+    }
+    return;
+  }
+
+  if (frame.type === "http-response-chunk") {
+    const pending = pendingHTTP.get(frame.id);
+    if (pending) {
+      pending.chunks.push(frame.body ?? "");
+    }
+    return;
+  }
+
+  if (frame.type === "http-response-end") {
+    const pending = pendingHTTP.get(frame.id);
+    pendingHTTP.delete(frame.id);
+    if (!pending?.response) {
+      return;
+    }
+    pending.resolve({
+      ...pending.response,
+      type: "http-response",
+      body: joinBase64Chunks(pending.chunks),
+    });
+    return;
+  }
+
   if (frame.type === "http-response" || frame.type === "http-error") {
     const pending = pendingHTTP.get(frame.id);
     pendingHTTP.delete(frame.id);
@@ -371,6 +407,22 @@ function handleTunnelFrame(frame: TunnelFrame) {
   if (frame.type.startsWith("ws-")) {
     window.postMessage({ ...frame, type: `turbomesh-${frame.type}` }, "*");
   }
+}
+
+function joinBase64Chunks(chunks: string[]) {
+  const parts = chunks.map((chunk) => Uint8Array.from(atob(chunk), (char) => char.charCodeAt(0)));
+  const length = parts.reduce((total, part) => total + part.byteLength, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.byteLength;
+  }
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
 }
 
 function replaceDocument(html: string) {
