@@ -1,5 +1,6 @@
 (() => {
   const NativeEventTarget = EventTarget;
+  const nativeFetch = window.fetch.bind(window);
   const sockets = new Map();
   let wsSeq = 0;
 
@@ -69,6 +70,26 @@
   };
   Object.assign(window.WebSocket, Original);
 
+  window.fetch = async function turboMeshFetch(input, init) {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.origin !== location.origin || !window.__turbomesh?.fetchHTTP) {
+      return nativeFetch(input, init);
+    }
+    const body = await request.arrayBuffer();
+    const response = await window.__turbomesh.fetchHTTP(
+      request.method,
+      url.pathname + url.search,
+      headersToObject(request.headers),
+      encodeBytes(new Uint8Array(body)),
+    );
+    return new Response(decodeBytes(response.body || ""), {
+      status: response.status || 502,
+      statusText: response.statusText || "",
+      headers: objectToHeaders(response.headers || {}),
+    });
+  };
+
   function encodePayload(data) {
     if (data instanceof ArrayBuffer) {
       return encodeBytes(new Uint8Array(data));
@@ -77,6 +98,25 @@
       return encodeBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
     }
     return encodeBytes(new TextEncoder().encode(String(data)));
+  }
+
+  function headersToObject(headers) {
+    const out = {};
+    headers.forEach((value, key) => {
+      out[key] = out[key] || [];
+      out[key].push(value);
+    });
+    return out;
+  }
+
+  function objectToHeaders(values) {
+    const headers = new Headers();
+    Object.entries(values).forEach(([key, list]) => {
+      for (const value of list) {
+        headers.append(key, value);
+      }
+    });
+    return headers;
   }
 
   function decodeText(value) {

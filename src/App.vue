@@ -43,6 +43,12 @@ declare global {
       openWS: (id: string, url: string) => void;
       sendWS: (id: string, body: string, opcode: number) => void;
       closeWS: (id: string) => void;
+      fetchHTTP: (
+        method: string,
+        url: string,
+        headers: Record<string, string[]>,
+        body: string,
+      ) => Promise<TunnelFrame>;
     };
   }
 }
@@ -60,6 +66,7 @@ let requestSeq = 0;
 let serviceWorkerBridge: MessagePort | undefined;
 const pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 const pendingHTTP = new Map<string, PendingHTTP>();
+const moduleURLCache = new Map<string, Promise<string>>();
 
 onMounted(() => {
   const slug = currentSlug();
@@ -217,6 +224,9 @@ function installRuntimeListeners() {
     closeWS(id) {
       sendTunnel({ type: "ws-close", id });
     },
+    fetchHTTP(method, url, headers, body) {
+      return tunnelHTTP(method, url, headers, body);
+    },
   };
 }
 
@@ -262,7 +272,7 @@ async function loadInitialDocument() {
     replaceDocument(`<pre>${escapeHTML(bytesToText(response.body ?? ""))}</pre>`);
     return;
   }
-  replaceDocument(injectRuntime(bytesToText(response.body ?? "")));
+  replaceDocument(await prepareHTMLDocument(bytesToText(response.body ?? "")));
 }
 
 function tunnelHTTP(method: string, url: string, headers: Record<string, string[]>, body: string) {
@@ -331,6 +341,135 @@ function replaceDocument(html: string) {
   document.open();
   document.write(html);
   document.close();
+}
+
+async function prepareHTMLDocument(html: string) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const head = doc.head || doc.documentElement.insertBefore(doc.createElement("head"), doc.body);
+
+  const base = doc.createElement("base");
+  base.href = "/";
+  head.prepend(base);
+
+  const runtime = doc.createElement("script");
+  runtime.textContent = turbomeshRuntime;
+  head.insertBefore(runtime, base.nextSibling);
+
+  await inlineStylesheets(doc);
+  await inlineScripts(doc);
+
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
+async function inlineStylesheets(doc: Document) {
+  const links = Array.from(doc.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]'));
+  await Promise.all(
+    links.map(async (link) => {
+      const href = link.getAttribute("href");
+      if (!href || isExternalURL(href)) {
+        return;
+      }
+      const css = await fetchTextOverTunnel(href, "text/css,*/*;q=0.1");
+      const style = doc.createElement("style");
+      style.textContent = css;
+      link.replaceWith(style);
+    }),
+  );
+}
+
+async function inlineScripts(doc: Document) {
+  const scripts = Array.from(doc.querySelectorAll<HTMLScriptElement>("script[src]"));
+  for (const script of scripts) {
+    const src = script.getAttribute("src");
+    if (!src || isExternalURL(src)) {
+      continue;
+    }
+    const type = (script.getAttribute("type") || "").toLowerCase();
+    const inline = doc.createElement("script");
+    for (const attr of Array.from(script.attributes)) {
+      if (attr.name !== "src" && attr.name !== "crossorigin" && attr.name !== "integrity") {
+        inline.setAttribute(attr.name, attr.value);
+      }
+    }
+    if (type === "module") {
+      inline.type = "module";
+      inline.textContent = await fetchModuleSource(src);
+    } else {
+      inline.textContent = await fetchTextOverTunnel(src, "*/*");
+    }
+    script.replaceWith(inline);
+  }
+}
+
+async function fetchModuleSource(rawURL: string) {
+  const moduleURL = normalizeTunnelURL(rawURL, "/");
+  const blobURL = await buildModuleBlobURL(moduleURL);
+  return `import ${JSON.stringify(blobURL)};`;
+}
+
+function buildModuleBlobURL(rawURL: string): Promise<string> {
+  const moduleURL = normalizeTunnelURL(rawURL, "/");
+  const cached = moduleURLCache.get(moduleURL);
+  if (cached) {
+    return cached;
+  }
+  const promise = (async () => {
+    const source = await fetchTextOverTunnel(moduleURL, "text/javascript,*/*;q=0.1");
+    const rewritten = await rewriteModuleImports(source, moduleURL);
+    return URL.createObjectURL(new Blob([rewritten], { type: "text/javascript" }));
+  })();
+  moduleURLCache.set(moduleURL, promise);
+  return promise;
+}
+
+async function rewriteModuleImports(source: string, importerURL: string) {
+  const pattern =
+    /(import\s+(?:[^'"]*?\s+from\s*)?["'])([^"']+)(["'])|(export\s+[^'"]*?\s+from\s*["'])([^"']+)(["'])|(import\s*\(\s*["'])([^"']+)(["']\s*\))/g;
+  let out = "";
+  let lastIndex = 0;
+  for (const match of source.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const prefix = match[1] ?? match[4] ?? match[7] ?? "";
+    const specifier = match[2] ?? match[5] ?? match[8] ?? "";
+    const suffix = match[3] ?? match[6] ?? match[9] ?? "";
+    out += source.slice(lastIndex, index);
+    if (isTunnelModuleSpecifier(specifier)) {
+      const dependencyURL = normalizeTunnelURL(specifier, importerURL);
+      const blobURL = await buildModuleBlobURL(dependencyURL);
+      out += `${prefix}${blobURL}${suffix}`;
+    } else {
+      out += match[0];
+    }
+    lastIndex = index + match[0].length;
+  }
+  out += source.slice(lastIndex);
+  return out;
+}
+
+function isTunnelModuleSpecifier(specifier: string) {
+  return specifier.startsWith("/") || specifier.startsWith("./") || specifier.startsWith("../");
+}
+
+function normalizeTunnelURL(rawURL: string, basePath: string) {
+  const base = new URL(basePath, window.location.origin);
+  const url = new URL(rawURL, base);
+  if (url.origin !== window.location.origin) {
+    return rawURL;
+  }
+  return url.pathname + url.search;
+}
+
+function isExternalURL(rawURL: string) {
+  const url = new URL(rawURL, window.location.origin);
+  return url.origin !== window.location.origin;
+}
+
+async function fetchTextOverTunnel(url: string, accept: string) {
+  const response = await tunnelHTTP("GET", normalizeTunnelURL(url, "/"), { Accept: [accept] }, "");
+  if ((response.status ?? 0) >= 400) {
+    throw new Error(`failed to load ${url}: ${response.status} ${response.statusText ?? ""}`);
+  }
+  return bytesToText(response.body ?? "");
 }
 
 function nextID() {
