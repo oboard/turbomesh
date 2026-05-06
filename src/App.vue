@@ -57,6 +57,7 @@ let signalSocket: WebSocket | undefined;
 let peer: RTCPeerConnection | undefined;
 let channel: RTCDataChannel | undefined;
 let requestSeq = 0;
+let serviceWorkerBridge: MessagePort | undefined;
 const pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 const pendingHTTP = new Map<string, PendingHTTP>();
 
@@ -173,6 +174,7 @@ async function registerServiceWorker() {
     return;
   }
   const registration = await navigator.serviceWorker.register("/turbomesh-sw.js", { scope: "/" });
+  await registration.update();
   await navigator.serviceWorker.ready;
   if (!navigator.serviceWorker.controller) {
     if (sessionStorage.getItem("turbomesh-sw-reloaded") !== "1") {
@@ -183,12 +185,7 @@ async function registerServiceWorker() {
     await waitForServiceWorkerController();
   }
   sessionStorage.removeItem("turbomesh-sw-reloaded");
-  const worker =
-    navigator.serviceWorker.controller ??
-    registration.active ??
-    registration.waiting ??
-    registration.installing;
-  worker?.postMessage({ type: "turbomesh-controller" });
+  connectServiceWorkerBridge();
 }
 
 function waitForServiceWorkerController() {
@@ -221,9 +218,16 @@ function installRuntimeListeners() {
       sendTunnel({ type: "ws-close", id });
     },
   };
+}
 
-  navigator.serviceWorker?.addEventListener("message", (event) => {
-    const port = event.ports[0];
+function connectServiceWorkerBridge() {
+  if (!navigator.serviceWorker.controller) {
+    throw new Error("service worker is not controlling the page");
+  }
+  serviceWorkerBridge?.close();
+  const channel = new MessageChannel();
+  serviceWorkerBridge = channel.port1;
+  serviceWorkerBridge.onmessage = (event) => {
     const data = event.data as {
       type: string;
       id: string;
@@ -232,6 +236,7 @@ function installRuntimeListeners() {
       headers: Record<string, string[]>;
       body: string;
     };
+    const port = event.ports[0];
     if (data.type !== "turbomesh-fetch" || !port) {
       return;
     }
@@ -240,7 +245,9 @@ function installRuntimeListeners() {
       .catch((error: Error) =>
         port.postMessage({ status: 502, statusText: error.message, headers: {}, body: "" }),
       );
-  });
+  };
+  serviceWorkerBridge.start();
+  navigator.serviceWorker.controller.postMessage({ type: "turbomesh-connect" }, [channel.port2]);
 }
 
 async function loadInitialDocument() {

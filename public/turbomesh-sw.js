@@ -1,4 +1,4 @@
-let controllerClientId = "";
+let tunnelPort;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -9,8 +9,9 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "turbomesh-controller" && event.source) {
-    controllerClientId = event.source.id;
+  if (event.data && event.data.type === "turbomesh-connect" && event.ports[0]) {
+    tunnelPort = event.ports[0];
+    tunnelPort.start();
   }
 });
 
@@ -26,8 +27,7 @@ self.addEventListener("fetch", (event) => {
 });
 
 async function proxyFetch(request) {
-  const client = await findControllerClient();
-  if (!client) {
+  if (!tunnelPort) {
     return fetch(request);
   }
 
@@ -37,7 +37,7 @@ async function proxyFetch(request) {
     channel.port1.onmessage = (event) => resolve(event.data);
   });
 
-  client.postMessage(
+  tunnelPort.postMessage(
     {
       type: "turbomesh-fetch",
       method: request.method,
@@ -54,17 +54,6 @@ async function proxyFetch(request) {
     statusText: response.statusText || "",
     headers: objectToHeaders(response.headers || {}),
   });
-}
-
-async function findControllerClient() {
-  if (controllerClientId) {
-    const client = await self.clients.get(controllerClientId);
-    if (client) {
-      return client;
-    }
-  }
-  const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  return clients[0];
 }
 
 function headersToObject(headers) {

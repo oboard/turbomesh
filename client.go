@@ -35,6 +35,26 @@ func NewLocalClient(serverURL string, port int, iceServers []string) *LocalClien
 }
 
 func (c *LocalClient) Run(ctx context.Context) error {
+	backoff := time.Second
+	for {
+		err := c.runOnce(ctx)
+		c.closePeers()
+		if ctx.Err() != nil {
+			return nil
+		}
+		log.Printf("signaling disconnected: %v; reconnecting in %s", err, backoff)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+		}
+		if backoff < 15*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func (c *LocalClient) runOnce(ctx context.Context) error {
 	dialer := websocket.DefaultDialer
 	conn, _, err := dialer.DialContext(ctx, c.serverURL, nil)
 	if err != nil {
@@ -42,6 +62,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 	}
 	defer conn.Close()
 	c.conn = conn
+	log.Printf("signaling connected")
 
 	done := make(chan error, 1)
 	go func() {
@@ -60,10 +81,8 @@ func (c *LocalClient) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		c.closePeers()
 		return nil
 	case err := <-done:
-		c.closePeers()
 		return err
 	}
 }
