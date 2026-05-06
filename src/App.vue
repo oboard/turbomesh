@@ -64,9 +64,11 @@ let peer: RTCPeerConnection | undefined;
 let channel: RTCDataChannel | undefined;
 let requestSeq = 0;
 let serviceWorkerBridge: MessagePort | undefined;
+let cleaningUp = false;
+let reloadingForServiceWorker = false;
+let tunnelOpenResolve: (() => void) | undefined;
 const pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 const pendingHTTP = new Map<string, PendingHTTP>();
-const moduleURLCache = new Map<string, Promise<string>>();
 
 onMounted(() => {
   const slug = currentSlug();
@@ -92,7 +94,13 @@ async function startProxy(slug: string) {
   status.value = "Preparing browser tunnel";
   detail.value = `Connecting to ${slug}.${baseDomain}`;
   installRuntimeListeners();
-  await registerServiceWorker();
+  try {
+    await registerServiceWorker();
+  } catch (error) {
+    status.value = "Service worker unavailable";
+    detail.value = error instanceof Error ? error.message : String(error);
+    return;
+  }
 
   peer = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -102,6 +110,8 @@ async function startProxy(slug: string) {
     connected.value = true;
     status.value = "Connected";
     detail.value = "HTTP and WebSocket traffic are using WebRTC DataChannels.";
+    tunnelOpenResolve?.();
+    tunnelOpenResolve = undefined;
     void loadInitialDocument();
   });
   channel.addEventListener("message", (event) => {
@@ -178,7 +188,10 @@ function sendSignal(message: SignalMessage) {
 
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) {
-    return;
+    throw new Error("This browser does not support service workers.");
+  }
+  if (!window.isSecureContext) {
+    throw new Error("Service workers require HTTPS. Use the https session URL.");
   }
   const registration = await navigator.serviceWorker.register("/turbomesh-sw.js", { scope: "/" });
   await registration.update();
@@ -186,6 +199,7 @@ async function registerServiceWorker() {
   if (!navigator.serviceWorker.controller) {
     if (sessionStorage.getItem("turbomesh-sw-reloaded") !== "1") {
       sessionStorage.setItem("turbomesh-sw-reloaded", "1");
+      reloadingForServiceWorker = true;
       window.location.reload();
       await new Promise<never>(() => {});
     }
@@ -214,6 +228,7 @@ function waitForServiceWorkerController() {
 }
 
 function installRuntimeListeners() {
+  window.addEventListener("pagehide", cleanupSession, { once: true });
   window.__turbomesh = {
     openWS(id, url) {
       sendTunnel({ type: "ws-open", id, url, headers: {} });
@@ -250,7 +265,8 @@ function connectServiceWorkerBridge() {
     if (data.type !== "turbomesh-fetch" || !port) {
       return;
     }
-    void tunnelHTTP(data.method, data.url, data.headers, data.body)
+    void waitForTunnelOpen()
+      .then(() => tunnelHTTP(data.method, data.url, data.headers, data.body))
       .then((response) => port.postMessage(response))
       .catch((error: Error) =>
         port.postMessage({ status: 502, statusText: error.message, headers: {}, body: "" }),
@@ -258,6 +274,24 @@ function connectServiceWorkerBridge() {
   };
   serviceWorkerBridge.start();
   navigator.serviceWorker.controller.postMessage({ type: "turbomesh-connect" }, [channel.port2]);
+}
+
+function waitForTunnelOpen() {
+  if (channel?.readyState === "open") {
+    return Promise.resolve();
+  }
+  if (channel?.readyState === "closing" || channel?.readyState === "closed") {
+    return Promise.reject(new Error("WebRTC tunnel is closed"));
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error("WebRTC tunnel is not open"));
+    }, 10_000);
+    tunnelOpenResolve = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+  });
 }
 
 async function loadInitialDocument() {
@@ -272,7 +306,7 @@ async function loadInitialDocument() {
     replaceDocument(`<pre>${escapeHTML(bytesToText(response.body ?? ""))}</pre>`);
     return;
   }
-  replaceDocument(await prepareHTMLDocument(bytesToText(response.body ?? "")));
+  replaceDocument(injectRuntime(bytesToText(response.body ?? "")));
 }
 
 function tunnelHTTP(method: string, url: string, headers: Record<string, string[]>, body: string) {
@@ -343,135 +377,6 @@ function replaceDocument(html: string) {
   document.close();
 }
 
-async function prepareHTMLDocument(html: string) {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const head = doc.head || doc.documentElement.insertBefore(doc.createElement("head"), doc.body);
-
-  const base = doc.createElement("base");
-  base.href = "/";
-  head.prepend(base);
-
-  const runtime = doc.createElement("script");
-  runtime.textContent = turbomeshRuntime;
-  head.insertBefore(runtime, base.nextSibling);
-
-  await inlineStylesheets(doc);
-  await inlineScripts(doc);
-
-  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
-}
-
-async function inlineStylesheets(doc: Document) {
-  const links = Array.from(doc.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]'));
-  await Promise.all(
-    links.map(async (link) => {
-      const href = link.getAttribute("href");
-      if (!href || isExternalURL(href)) {
-        return;
-      }
-      const css = await fetchTextOverTunnel(href, "text/css,*/*;q=0.1");
-      const style = doc.createElement("style");
-      style.textContent = css;
-      link.replaceWith(style);
-    }),
-  );
-}
-
-async function inlineScripts(doc: Document) {
-  const scripts = Array.from(doc.querySelectorAll<HTMLScriptElement>("script[src]"));
-  for (const script of scripts) {
-    const src = script.getAttribute("src");
-    if (!src || isExternalURL(src)) {
-      continue;
-    }
-    const type = (script.getAttribute("type") || "").toLowerCase();
-    const inline = doc.createElement("script");
-    for (const attr of Array.from(script.attributes)) {
-      if (attr.name !== "src" && attr.name !== "crossorigin" && attr.name !== "integrity") {
-        inline.setAttribute(attr.name, attr.value);
-      }
-    }
-    if (type === "module") {
-      inline.type = "module";
-      inline.textContent = await fetchModuleSource(src);
-    } else {
-      inline.textContent = await fetchTextOverTunnel(src, "*/*");
-    }
-    script.replaceWith(inline);
-  }
-}
-
-async function fetchModuleSource(rawURL: string) {
-  const moduleURL = normalizeTunnelURL(rawURL, "/");
-  const blobURL = await buildModuleBlobURL(moduleURL);
-  return `import ${JSON.stringify(blobURL)};`;
-}
-
-function buildModuleBlobURL(rawURL: string): Promise<string> {
-  const moduleURL = normalizeTunnelURL(rawURL, "/");
-  const cached = moduleURLCache.get(moduleURL);
-  if (cached) {
-    return cached;
-  }
-  const promise = (async () => {
-    const source = await fetchTextOverTunnel(moduleURL, "text/javascript,*/*;q=0.1");
-    const rewritten = await rewriteModuleImports(source, moduleURL);
-    return URL.createObjectURL(new Blob([rewritten], { type: "text/javascript" }));
-  })();
-  moduleURLCache.set(moduleURL, promise);
-  return promise;
-}
-
-async function rewriteModuleImports(source: string, importerURL: string) {
-  const pattern =
-    /(import\s+(?:[^'"]*?\s+from\s*)?["'])([^"']+)(["'])|(export\s+[^'"]*?\s+from\s*["'])([^"']+)(["'])|(import\s*\(\s*["'])([^"']+)(["']\s*\))/g;
-  let out = "";
-  let lastIndex = 0;
-  for (const match of source.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    const prefix = match[1] ?? match[4] ?? match[7] ?? "";
-    const specifier = match[2] ?? match[5] ?? match[8] ?? "";
-    const suffix = match[3] ?? match[6] ?? match[9] ?? "";
-    out += source.slice(lastIndex, index);
-    if (isTunnelModuleSpecifier(specifier)) {
-      const dependencyURL = normalizeTunnelURL(specifier, importerURL);
-      const blobURL = await buildModuleBlobURL(dependencyURL);
-      out += `${prefix}${blobURL}${suffix}`;
-    } else {
-      out += match[0];
-    }
-    lastIndex = index + match[0].length;
-  }
-  out += source.slice(lastIndex);
-  return out;
-}
-
-function isTunnelModuleSpecifier(specifier: string) {
-  return specifier.startsWith("/") || specifier.startsWith("./") || specifier.startsWith("../");
-}
-
-function normalizeTunnelURL(rawURL: string, basePath: string) {
-  const base = new URL(basePath, window.location.origin);
-  const url = new URL(rawURL, base);
-  if (url.origin !== window.location.origin) {
-    return rawURL;
-  }
-  return url.pathname + url.search;
-}
-
-function isExternalURL(rawURL: string) {
-  const url = new URL(rawURL, window.location.origin);
-  return url.origin !== window.location.origin;
-}
-
-async function fetchTextOverTunnel(url: string, accept: string) {
-  const response = await tunnelHTTP("GET", normalizeTunnelURL(url, "/"), { Accept: [accept] }, "");
-  if ((response.status ?? 0) >= 400) {
-    throw new Error(`failed to load ${url}: ${response.status} ${response.statusText ?? ""}`);
-  }
-  return bytesToText(response.body ?? "");
-}
-
 function nextID() {
   requestSeq += 1;
   return `${Date.now().toString(36)}-${requestSeq.toString(36)}`;
@@ -516,6 +421,26 @@ function injectRuntime(html: string) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${base}${runtime}`);
   }
   return `${base}${runtime}${html}`;
+}
+
+function cleanupSession() {
+  if (reloadingForServiceWorker) {
+    return;
+  }
+  if (cleaningUp) {
+    return;
+  }
+  cleaningUp = true;
+  navigator.serviceWorker.controller?.postMessage({ type: "turbomesh-disconnect" });
+  serviceWorkerBridge?.close();
+  signalSocket?.close();
+  channel?.close();
+  peer?.close();
+  if ("serviceWorker" in navigator) {
+    void navigator.serviceWorker
+      .getRegistration("/")
+      .then((registration) => registration?.unregister());
+  }
 }
 </script>
 

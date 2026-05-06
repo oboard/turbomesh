@@ -12,6 +12,11 @@ self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "turbomesh-connect" && event.ports[0]) {
     tunnelPort = event.ports[0];
     tunnelPort.start();
+    return;
+  }
+  if (event.data && event.data.type === "turbomesh-disconnect") {
+    tunnelPort?.close();
+    tunnelPort = undefined;
   }
 });
 
@@ -28,7 +33,10 @@ self.addEventListener("fetch", (event) => {
 
 async function proxyFetch(request) {
   if (!tunnelPort) {
-    return fetch(request);
+    return new Response("TurboMesh service worker is not connected to WebRTC.", {
+      status: 503,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
   }
 
   const body = await request.arrayBuffer();

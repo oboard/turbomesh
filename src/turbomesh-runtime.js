@@ -4,6 +4,16 @@
   const sockets = new Map();
   let wsSeq = 0;
 
+  addEventListener(
+    "pagehide",
+    () => {
+      void navigator.serviceWorker
+        ?.getRegistration("/")
+        ?.then((registration) => registration?.unregister());
+    },
+    { once: true },
+  );
+
   class TurboMeshWebSocket extends NativeEventTarget {
     constructor(url) {
       super();
