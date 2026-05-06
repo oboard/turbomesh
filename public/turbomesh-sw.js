@@ -28,6 +28,9 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname === "/turbomesh-sw.js" || url.pathname.startsWith("/api/")) {
     return;
   }
+  if (url.pathname.startsWith("/assets/") || url.pathname === "/favicon.svg") {
+    return;
+  }
   if (event.request.mode === "navigate") {
     return;
   }
