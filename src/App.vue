@@ -30,6 +30,8 @@ type TunnelFrame = {
   status?: number;
   statusText?: string;
   opcode?: number;
+  protocols?: string[];
+  protocol?: string;
 };
 
 type PendingHTTP = {
@@ -40,7 +42,7 @@ type PendingHTTP = {
 declare global {
   interface Window {
     __turbomesh?: {
-      openWS: (id: string, url: string) => void;
+      openWS: (id: string, url: string, protocols: string[]) => void;
       sendWS: (id: string, body: string, opcode: number) => void;
       closeWS: (id: string) => void;
       fetchHTTP: (
@@ -230,8 +232,8 @@ function waitForServiceWorkerController() {
 function installRuntimeListeners() {
   window.addEventListener("pagehide", cleanupSession, { once: true });
   window.__turbomesh = {
-    openWS(id, url) {
-      sendTunnel({ type: "ws-open", id, url, headers: {} });
+    openWS(id, url, protocols) {
+      sendTunnel({ type: "ws-open", id, url, headers: {}, protocols });
     },
     sendWS(id, body, opcode) {
       sendTunnel({ type: "ws-send", id, body, opcode });

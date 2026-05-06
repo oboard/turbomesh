@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -94,8 +95,20 @@ func spaFileServer(files fs.FS) http.Handler {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
+		if isAssetRequest(r, path) {
+			http.NotFound(w, r)
+			return
+		}
 		serveIndex(w, r, files)
 	})
+}
+
+func isAssetRequest(r *http.Request, path string) bool {
+	if filepath.Ext(path) != "" {
+		return true
+	}
+	accept := r.Header.Get("Accept")
+	return accept != "" && !strings.Contains(accept, "text/html")
 }
 
 func serveIndex(w http.ResponseWriter, r *http.Request, files fs.FS) {
@@ -104,5 +117,10 @@ func serveIndex(w http.ResponseWriter, r *http.Request, files fs.FS) {
 		http.Error(w, "frontend index.html not found", http.StatusInternalServerError)
 		return
 	}
+	contentType := mime.TypeByExtension(".html")
+	if contentType == "" {
+		contentType = "text/html; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(content))
 }

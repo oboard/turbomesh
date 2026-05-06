@@ -54,6 +54,40 @@ func TestHomepageServesFallbackWhenStaticMissing(t *testing.T) {
 	}
 }
 
+func TestMissingAssetDoesNotReturnHTMLFallback(t *testing.T) {
+	handler := NewHTTPHandler("web.oboard.fun.", "missing-dist", NewSignalHub(), false)
+	req := httptest.NewRequest(http.MethodGet, "http://web.oboard.fun/js.js", nil)
+	req.Host = "web.oboard.fun"
+	req.Header.Set("Accept", "*/*")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing asset to return 404, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "<!doctype html>") {
+		t.Fatal("missing asset returned HTML fallback")
+	}
+}
+
+func TestMissingRouteStillReturnsHTMLFallback(t *testing.T) {
+	handler := NewHTTPHandler("web.oboard.fun.", "missing-dist", NewSignalHub(), false)
+	req := httptest.NewRequest(http.MethodGet, "http://web.oboard.fun/dashboard", nil)
+	req.Host = "web.oboard.fun"
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected route fallback to return 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "TurboMesh") {
+		t.Fatal("expected HTML fallback content")
+	}
+}
+
 func TestTLSAskAllowsBaseAndValidSlugOnly(t *testing.T) {
 	handler := NewHTTPHandler("web.oboard.fun.", "missing-dist", NewSignalHub(), false)
 

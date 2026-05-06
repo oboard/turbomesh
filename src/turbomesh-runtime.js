@@ -15,12 +15,13 @@
   );
 
   class TurboMeshWebSocket extends NativeEventTarget {
-    constructor(url) {
+    constructor(url, protocols) {
       super();
       this.url = String(url);
+      this.protocol = "";
       this.readyState = 0;
       this.id = `ws-${Date.now().toString(36)}-${(++wsSeq).toString(36)}`;
-      window.__turbomesh.openWS(this.id, this.url);
+      window.__turbomesh.openWS(this.id, this.url, normalizeProtocols(protocols));
     }
 
     send(data) {
@@ -50,6 +51,7 @@
 
     if (data.type === "turbomesh-ws-opened") {
       socket.readyState = 1;
+      socket.protocol = data.protocol || "";
       const open = new Event("open");
       socket.dispatchEvent(open);
       socket.onopen?.(open);
@@ -108,6 +110,16 @@
       return encodeBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
     }
     return encodeBytes(new TextEncoder().encode(String(data)));
+  }
+
+  function normalizeProtocols(protocols) {
+    if (!protocols) {
+      return [];
+    }
+    if (typeof protocols === "string") {
+      return [protocols];
+    }
+    return Array.from(protocols);
   }
 
   function headersToObject(headers) {

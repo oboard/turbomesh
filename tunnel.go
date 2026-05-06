@@ -24,6 +24,8 @@ type TunnelFrame struct {
 	Status     int                 `json:"status,omitempty"`
 	StatusText string              `json:"statusText,omitempty"`
 	Opcode     int                 `json:"opcode,omitempty"`
+	Protocols  []string            `json:"protocols,omitempty"`
+	Protocol   string              `json:"protocol,omitempty"`
 }
 
 type TunnelProxy struct {
@@ -110,7 +112,8 @@ func (p *TunnelProxy) handleWSOpen(dc *webrtc.DataChannel, frame TunnelFrame) {
 		p.send(dc, TunnelFrame{Type: "ws-error", ID: frame.ID, StatusText: err.Error()})
 		return
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(target, http.Header(frame.Headers))
+	dialer := websocket.Dialer{Subprotocols: frame.Protocols}
+	conn, _, err := dialer.Dial(target, http.Header(frame.Headers))
 	if err != nil {
 		p.send(dc, TunnelFrame{Type: "ws-error", ID: frame.ID, StatusText: err.Error()})
 		return
@@ -119,7 +122,7 @@ func (p *TunnelProxy) handleWSOpen(dc *webrtc.DataChannel, frame TunnelFrame) {
 	p.wsMu.Lock()
 	p.wsConn[frame.ID] = conn
 	p.wsMu.Unlock()
-	p.send(dc, TunnelFrame{Type: "ws-opened", ID: frame.ID})
+	p.send(dc, TunnelFrame{Type: "ws-opened", ID: frame.ID, Protocol: conn.Subprotocol()})
 
 	go func() {
 		defer p.handleWSClose(frame.ID)
